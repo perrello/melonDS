@@ -2,6 +2,13 @@
 #include <cstring>
 #include <string>
 
+#ifdef __EMSCRIPTEN__
+#include <deque>
+#include <utility>
+#include <vector>
+#include <emscripten/emscripten.h>
+#endif
+
 #if defined(_WIN32) && !defined(_XBOX)
 #include <winsock2.h>
 #include <windows.h>
@@ -69,6 +76,63 @@ extern char retro_base_directory[4096];
 socket_t MPSocket;
 sockaddr_t MPSendAddr;
 u8 PacketBuffer[2048];
+
+#ifdef __EMSCRIPTEN__
+namespace
+{
+   std::deque<std::vector<u8>> mp_rx_queue;
+   int mp_client_id = 0;
+   int mp_client_count = 0;
+}
+
+EM_JS(void, netpacket_bridge_send, (int flags, const u8* data, int len), {
+   if (typeof Module === 'undefined') return;
+   var bridge = Module.NetpacketBridge;
+   if (bridge && typeof bridge.onSend === 'function') {
+      var payload = HEAPU8.slice(data, data + len);
+      bridge.onSend(flags, payload);
+   }
+});
+
+EM_JS(int, netpacket_bridge_connected, (int clientId, int maxClients), {
+   if (typeof Module === 'undefined') return 1;
+   var bridge = Module.NetpacketBridge;
+   if (bridge && typeof bridge.onConnected === 'function') {
+      return bridge.onConnected(clientId, maxClients) ? 1 : 0;
+   }
+   return 1;
+});
+
+EM_JS(void, netpacket_bridge_disconnected, (int clientId), {
+   if (typeof Module === 'undefined') return;
+   var bridge = Module.NetpacketBridge;
+   if (bridge && typeof bridge.onDisconnected === 'function') {
+      bridge.onDisconnected(clientId);
+   }
+});
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE
+void netpacket_receive(const u8* data, int len, int client_id)
+{
+   (void)client_id;
+   if (!data || len <= 0)
+      return;
+
+   std::vector<u8> frame(len);
+   memcpy(frame.data(), data, len);
+   mp_rx_queue.push_back(std::move(frame));
+}
+
+EMSCRIPTEN_KEEPALIVE
+void netpacket_set_client_state(int client_id, int max_clients)
+{
+   mp_client_id = client_id;
+   mp_client_count = max_clients;
+   netpacket_bridge_connected(client_id, max_clients);
+}
+} // extern "C"
+#endif
 
 namespace Platform
 {
@@ -222,6 +286,11 @@ namespace Platform
 
    bool MP_Init()
    {
+#ifdef __EMSCRIPTEN__
+      mp_rx_queue.clear();
+      netpacket_bridge_connected(mp_client_id, mp_client_count);
+      return true;
+#else
       int opt_true = 1;
       int res;
 
@@ -272,20 +341,39 @@ namespace Platform
       *(u16*)&MPSendAddr.sa_data[0] = htons(7064);
 
       return true;
+#endif
    }
 
    void MP_DeInit()
    {
+#ifdef __EMSCRIPTEN__
+      mp_rx_queue.clear();
+      netpacket_bridge_disconnected(mp_client_id);
+      return;
+#else
       if (MPSocket >= 0)
          closesocket(MPSocket);
 
 #ifdef _WIN32
       WSACleanup();
 #endif // __WXMSW__
+#endif
    }
 
    int MP_SendPacket(u8* data, int len)
    {
+#ifdef __EMSCRIPTEN__
+      if (len <= 0)
+         return 0;
+      if (len > 2048-8)
+      {
+         printf("MP_SendPacket: error: packet too long (%d)\n", len);
+         return 0;
+      }
+
+      netpacket_bridge_send(0, data, len);
+      return len;
+#else
       if (MPSocket < 0)
       {
          printf("MP_SendPacket: early return (%d)\n", len);
@@ -308,10 +396,26 @@ namespace Platform
       if (slen < 8) return 0;
       return slen - 8;
 
+#endif
    }
 
    int MP_RecvPacket(u8* data, bool block)
    {
+#ifdef __EMSCRIPTEN__
+      (void)block;
+      if (mp_rx_queue.empty())
+         return 0;
+
+      std::vector<u8> frame = std::move(mp_rx_queue.front());
+      mp_rx_queue.pop_front();
+
+      int len = (int)frame.size();
+      if (len > 2048)
+         len = 2048;
+
+      memcpy(data, frame.data(), len);
+      return len;
+#else
       if (MPSocket < 0)
       {
          printf("MP_RecvPacket: early return\n");
@@ -357,6 +461,7 @@ namespace Platform
 
       memcpy(data, &PacketBuffer[8], rlen);
       return rlen;
+#endif
    }
 
    bool LAN_Init()
