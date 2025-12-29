@@ -29,7 +29,7 @@ emmake make -f Makefile platform=emscripten CC=emcc CXX=em++ AR=emar RANLIB=emra
 emmake make -f Makefile platform=emscripten CC=emcc CXX=em++ AR=emar RANLIB=emranlib ${MAKE_ARGS}
 
 if [[ -z "${OUT}" ]]; then
-  OUT="${ROOT_DIR}/melonds_libretro.js"
+  OUT="${ROOT_DIR}/melonds.js"
 fi
 emcc "${BC_FILE}" -o "${OUT}" -s MODULARIZE=1 -s EXPORT_NAME=melonds -s EXPORT_ALL=1 ${EMCC_ARGS}
 
