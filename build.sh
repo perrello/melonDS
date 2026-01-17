@@ -41,10 +41,16 @@ if [[ -n "${RA_JOBS}" ]]; then
   RA_JOBS_ARG="-j${RA_JOBS}"
 fi
 
+MAKE_ENV=()
 if [[ "${ENABLE_PTHREADS}" == "1" ]]; then
-  MAKE_ARGS="${MAKE_ARGS} CFLAGS+=-pthread CXXFLAGS+=-pthread"
-  EMCC_ARGS="${EMCC_ARGS} -pthread"
+  pthreads_cflags="-pthread -s SHARED_MEMORY"
+  pthreads_ldflags="-pthread -s SHARED_MEMORY -s PTHREAD_POOL_SIZE=${PTHREAD_POOL_SIZE}"
+  MAKE_ARGS="${MAKE_ARGS} HAVE_THREADS=1"
+  EMCC_ARGS="${EMCC_ARGS} ${pthreads_ldflags}"
   RA_MAKE_ARGS="${RA_MAKE_ARGS} HAVE_THREADS=1 PTHREAD_POOL_SIZE=${PTHREAD_POOL_SIZE}"
+  MAKE_ENV+=("CFLAGS=${CFLAGS:+${CFLAGS} }${pthreads_cflags}")
+  MAKE_ENV+=("CXXFLAGS=${CXXFLAGS:+${CXXFLAGS} }${pthreads_cflags}")
+  MAKE_ENV+=("LDFLAGS=${LDFLAGS:+${LDFLAGS} }${pthreads_ldflags}")
 fi
 
 if [[ -z "${STATIC_LINKING}" ]]; then
@@ -57,8 +63,15 @@ fi
 
 pushd "${ROOT_DIR}" >/dev/null
 
-emmake make -f Makefile platform=emscripten CC=emcc CXX=em++ AR=emar RANLIB=emranlib clean STATIC_LINKING="${STATIC_LINKING}" ${MAKE_ARGS}
-emmake make -f Makefile platform=emscripten CC=emcc CXX=em++ AR=emar RANLIB=emranlib STATIC_LINKING="${STATIC_LINKING}" ${MAKE_ARGS}
+make_clean_cmd=(emmake make -f Makefile platform=emscripten CC=emcc CXX=em++ AR=emar RANLIB=emranlib clean STATIC_LINKING="${STATIC_LINKING}" ${MAKE_ARGS})
+make_build_cmd=(emmake make -f Makefile platform=emscripten CC=emcc CXX=em++ AR=emar RANLIB=emranlib STATIC_LINKING="${STATIC_LINKING}" ${MAKE_ARGS})
+if [[ ${#MAKE_ENV[@]} -gt 0 ]]; then
+  env "${MAKE_ENV[@]}" "${make_clean_cmd[@]}"
+  env "${MAKE_ENV[@]}" "${make_build_cmd[@]}"
+else
+  "${make_clean_cmd[@]}"
+  "${make_build_cmd[@]}"
+fi
 
 if [[ "${BUILD_CORE_JS}" != "0" ]]; then
   if [[ -z "${OUT}" ]]; then
@@ -104,7 +117,13 @@ if [[ "${BUILD_RETROARCH}" != "0" ]]; then
 
   cp "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.js" "${OUTPUT_DIR}/${LIBRETRO_NAME}.js"
   cp "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.wasm" "${OUTPUT_DIR}/${LIBRETRO_NAME}.wasm"
+  if [[ -f "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.worker.js" ]]; then
+    cp "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.worker.js" "${OUTPUT_DIR}/${LIBRETRO_NAME}_libretro.worker.js"
+  fi
 
   echo "Built RetroArch JS: ${OUTPUT_DIR}/${LIBRETRO_NAME}.js"
   echo "Built RetroArch WASM: ${OUTPUT_DIR}/${LIBRETRO_NAME}.wasm"
+  if [[ -f "${OUTPUT_DIR}/${LIBRETRO_NAME}_libretro.worker.js" ]]; then
+    echo "Built RetroArch worker JS: ${OUTPUT_DIR}/${LIBRETRO_NAME}_libretro.worker.js"
+  fi
 fi
