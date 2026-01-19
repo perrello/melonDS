@@ -3,6 +3,97 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# User-configurable build flags.
+# Add items as "KEY=VALUE" (one per line).
+# Common flags apply to both builds; *_PTHREADS only when ENABLE_PTHREADS=1;
+# *_NOPTHREADS only when ENABLE_PTHREADS=0.
+CORE_MAKE_FLAGS_COMMON=(
+)
+CORE_MAKE_FLAGS_PTHREADS=(
+  "HAVE_THREADS=1"
+  "CHEEVOS=1"
+)
+CORE_MAKE_FLAGS_NOPTHREADS=(
+  "HAVE_THREADS=0"
+  "CHEEVOS=1"
+)
+
+RETROARCH_MAKE_FLAGS_COMMON=(
+)
+RETROARCH_MAKE_FLAGS_PTHREADS=(
+  "HAVE_AL=0"
+  "HAVE_CHEEVOS=1"
+  "HAVE_THREADS=1"
+  "PTHREAD_POOL_SIZE=1"
+  "ALLOW_MEMORY_GROWTH=0"
+  # Common sizes: 256MB=268435456, 512MB=536870912, 1GB=1073741824.
+  # RetroArch default INITIAL_HEAP was 134217728 (128MB); MAXIMUM_MEMORY unset.
+  "INITIAL_HEAP=536870912"
+  "MAXIMUM_MEMORY=1073741824"
+)
+RETROARCH_MAKE_FLAGS_NOPTHREADS=(
+  "HAVE_AL=0"
+  "HAVE_CHEEVOS=1"
+  "HAVE_THREADS=0"
+  "PTHREAD_POOL_SIZE=0"
+  # Common sizes: 256MB=268435456, 512MB=536870912, 1GB=1073741824.
+  # RetroArch default INITIAL_HEAP was 134217728 (128MB); MAXIMUM_MEMORY unset.
+  # RetroArch default ALLOW_MEMORY_GROWTH was 1 (enabled).
+  "ALLOW_MEMORY_GROWTH=0"
+  "INITIAL_HEAP=1073741824"
+  "MAXIMUM_MEMORY=1073741824"
+)
+
+# Toolchain flags for the core build.
+CORE_CFLAGS_COMMON=(
+)
+CORE_CFLAGS_PTHREADS=(
+  "-pthread"
+  "-s" "SHARED_MEMORY"
+)
+CORE_CFLAGS_NOPTHREADS=(
+)
+
+CORE_CXXFLAGS_COMMON=(
+)
+CORE_CXXFLAGS_PTHREADS=(
+  "-pthread"
+  "-s" "SHARED_MEMORY"
+)
+CORE_CXXFLAGS_NOPTHREADS=(
+)
+
+CORE_LDFLAGS_COMMON=(
+)
+CORE_LDFLAGS_PTHREADS=(
+  "-pthread"
+  "-s" "SHARED_MEMORY"
+  "-s" "PTHREAD_POOL_SIZE=1"
+)
+CORE_LDFLAGS_NOPTHREADS=(
+)
+
+# emcc flags for the core JS build step.
+EMCC_FLAGS_COMMON=(
+)
+EMCC_FLAGS_PTHREADS=(
+  "-pthread"
+  "-s" "SHARED_MEMORY"
+  "-s" "PTHREAD_POOL_SIZE=1"
+  "-s" "ALLOW_MEMORY_GROWTH=0"
+  "-s" "MAXIMUM_MEMORY=536870912"
+)
+EMCC_FLAGS_NOPTHREADS=(
+  "-s" "ALLOW_MEMORY_GROWTH=1"
+  "-s" "MAXIMUM_MEMORY=536870912"
+)
+
+join_by() {
+  local IFS="$1"
+  shift
+  echo "$*"
+}
+
 # Optionally source emsdk env when EMSDK_ENV points at emsdk_env.sh.
 if [[ -n "${EMSDK_ENV:-}" && -f "${EMSDK_ENV}" ]]; then
   # shellcheck disable=SC1090
@@ -32,10 +123,9 @@ BUILD_RETROARCH=1
 LIBRETRO_NAME="${LIBRETRO_NAME:-melonds}"
 RETROARCH_DIR="${RETROARCH_DIR:-${ROOT_DIR}/retroarch-linker}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist-wasm}"
-RA_MAKE_ARGS="${RA_MAKE_ARGS:-HAVE_AL=0 HAVE_CHEEVOS=1}"
+RA_MAKE_ARGS="${RA_MAKE_ARGS:-}"
 RA_TARGET="${RA_TARGET:-${LIBRETRO_NAME}.js}"
 ENABLE_PTHREADS="${ENABLE_PTHREADS:-0}"
-PTHREAD_POOL_SIZE="${PTHREAD_POOL_SIZE:-}"
 RA_JOBS="${RA_JOBS:-}"
 RA_CLEAN="${RA_CLEAN:-1}"
 RETROARCH_REPO="${RETROARCH_REPO:-https://github.com/libretro/RetroArch}"
@@ -54,77 +144,56 @@ normalize_bool() {
   esac
 }
 
-sanitize_make_args() {
-  local input="${1:-}"
-  local output=""
-  set -- ${input}
-  while [[ $# -gt 0 ]]; do
-    local token="$1"
-    shift
-    case "${token}" in
-      HAVE_THREADS=*|PTHREAD_POOL_SIZE=*) continue ;;
-    esac
-    if [[ -n "${output}" ]]; then
-      output+=" "
-    fi
-    output+="${token}"
-  done
-  printf "%s" "${output}"
-}
-
-sanitize_flag_list() {
-  local input="${1:-}"
-  local output=""
-  set -- ${input}
-  while [[ $# -gt 0 ]]; do
-    local token="$1"
-    shift
-    if [[ "${token}" == "-pthread" ]]; then
-      continue
-    fi
-    if [[ "${token}" == "-s" && $# -gt 0 ]]; then
-      local next="$1"
-      if [[ "${next}" == "SHARED_MEMORY" || "${next}" == PTHREAD_POOL_SIZE=* ]]; then
-        shift
-        continue
-      fi
-    fi
-    if [[ -n "${output}" ]]; then
-      output+=" "
-    fi
-    output+="${token}"
-  done
-  printf "%s" "${output}"
-}
-
 ENABLE_PTHREADS="$(normalize_bool "${ENABLE_PTHREADS}")"
-MAKE_ARGS="$(sanitize_make_args "${MAKE_ARGS}")"
-RA_MAKE_ARGS="$(sanitize_make_args "${RA_MAKE_ARGS}")"
-EMCC_ARGS="$(sanitize_flag_list "${EMCC_ARGS}")"
 
-clean_cflags="$(sanitize_flag_list "${CFLAGS:-}")"
-clean_cxxflags="$(sanitize_flag_list "${CXXFLAGS:-}")"
-clean_ldflags="$(sanitize_flag_list "${LDFLAGS:-}")"
+if [[ "${ENABLE_PTHREADS}" == "1" ]]; then
+  core_flags="$(join_by ' ' "${CORE_MAKE_FLAGS_COMMON[@]-}" "${CORE_MAKE_FLAGS_PTHREADS[@]-}")"
+  ra_flags="$(join_by ' ' "${RETROARCH_MAKE_FLAGS_COMMON[@]-}" "${RETROARCH_MAKE_FLAGS_PTHREADS[@]-}")"
+  core_cflags="$(join_by ' ' "${CORE_CFLAGS_COMMON[@]-}" "${CORE_CFLAGS_PTHREADS[@]-}")"
+  core_cxxflags="$(join_by ' ' "${CORE_CXXFLAGS_COMMON[@]-}" "${CORE_CXXFLAGS_PTHREADS[@]-}")"
+  core_ldflags="$(join_by ' ' "${CORE_LDFLAGS_COMMON[@]-}" "${CORE_LDFLAGS_PTHREADS[@]-}")"
+  emcc_flags="$(join_by ' ' "${EMCC_FLAGS_COMMON[@]-}" "${EMCC_FLAGS_PTHREADS[@]-}")"
+else
+  core_flags="$(join_by ' ' "${CORE_MAKE_FLAGS_COMMON[@]-}" "${CORE_MAKE_FLAGS_NOPTHREADS[@]-}")"
+  ra_flags="$(join_by ' ' "${RETROARCH_MAKE_FLAGS_COMMON[@]-}" "${RETROARCH_MAKE_FLAGS_NOPTHREADS[@]-}")"
+  core_cflags="$(join_by ' ' "${CORE_CFLAGS_COMMON[@]-}" "${CORE_CFLAGS_NOPTHREADS[@]-}")"
+  core_cxxflags="$(join_by ' ' "${CORE_CXXFLAGS_COMMON[@]-}" "${CORE_CXXFLAGS_NOPTHREADS[@]-}")"
+  core_ldflags="$(join_by ' ' "${CORE_LDFLAGS_COMMON[@]-}" "${CORE_LDFLAGS_NOPTHREADS[@]-}")"
+  emcc_flags="$(join_by ' ' "${EMCC_FLAGS_COMMON[@]-}" "${EMCC_FLAGS_NOPTHREADS[@]-}")"
+fi
+
+if [[ -n "${MAKE_ARGS}" ]]; then
+  MAKE_ARGS="${core_flags:+${core_flags} }${MAKE_ARGS}"
+else
+  MAKE_ARGS="${core_flags}"
+fi
+if [[ -n "${RA_MAKE_ARGS}" ]]; then
+  RA_MAKE_ARGS="${ra_flags:+${ra_flags} }${RA_MAKE_ARGS}"
+else
+  RA_MAKE_ARGS="${ra_flags}"
+fi
+if [[ -n "${EMCC_ARGS}" ]]; then
+  EMCC_ARGS="${emcc_flags:+${emcc_flags} }${EMCC_ARGS}"
+else
+  EMCC_ARGS="${emcc_flags}"
+fi
 
 MAKE_ENV=()
-if [[ "${ENABLE_PTHREADS}" == "1" ]]; then
-  PTHREAD_POOL_SIZE="${PTHREAD_POOL_SIZE:-4}"
-  pthreads_cflags="-pthread -s SHARED_MEMORY"
-  pthreads_ldflags="-pthread -s SHARED_MEMORY -s PTHREAD_POOL_SIZE=${PTHREAD_POOL_SIZE}"
-  MAKE_ARGS="${MAKE_ARGS} HAVE_THREADS=1"
-  EMCC_ARGS="${EMCC_ARGS} ${pthreads_ldflags}"
-  RA_MAKE_ARGS="${RA_MAKE_ARGS} HAVE_THREADS=1 PTHREAD_POOL_SIZE=${PTHREAD_POOL_SIZE}"
-  clean_cflags="${clean_cflags:+${clean_cflags} }${pthreads_cflags}"
-  clean_cxxflags="${clean_cxxflags:+${clean_cxxflags} }${pthreads_cflags}"
-  clean_ldflags="${clean_ldflags:+${clean_ldflags} }${pthreads_ldflags}"
-else
-  PTHREAD_POOL_SIZE=""
-  MAKE_ARGS="${MAKE_ARGS} HAVE_THREADS=0"
-  RA_MAKE_ARGS="${RA_MAKE_ARGS} HAVE_THREADS=0"
+merged_cflags="${CFLAGS:-}"
+if [[ -n "${core_cflags}" ]]; then
+  merged_cflags="${merged_cflags:+${merged_cflags} }${core_cflags}"
 fi
-MAKE_ENV+=("CFLAGS=${clean_cflags}")
-MAKE_ENV+=("CXXFLAGS=${clean_cxxflags}")
-MAKE_ENV+=("LDFLAGS=${clean_ldflags}")
+merged_cxxflags="${CXXFLAGS:-}"
+if [[ -n "${core_cxxflags}" ]]; then
+  merged_cxxflags="${merged_cxxflags:+${merged_cxxflags} }${core_cxxflags}"
+fi
+merged_ldflags="${LDFLAGS:-}"
+if [[ -n "${core_ldflags}" ]]; then
+  merged_ldflags="${merged_ldflags:+${merged_ldflags} }${core_ldflags}"
+fi
+MAKE_ENV+=("CFLAGS=${merged_cflags}")
+MAKE_ENV+=("CXXFLAGS=${merged_cxxflags}")
+MAKE_ENV+=("LDFLAGS=${merged_ldflags}")
 
 if [[ -z "${STATIC_LINKING}" ]]; then
   if [[ "${BUILD_RETROARCH}" != "0" ]]; then
@@ -151,11 +220,6 @@ echo "  MAKE_ARGS=${MAKE_ARGS}"
 echo "  RA_MAKE_ARGS=${RA_MAKE_ARGS}"
 echo "  RA_TARGET=${RA_TARGET}"
 echo "  EMCC_ARGS=${EMCC_ARGS}"
-if [[ "${ENABLE_PTHREADS}" == "1" ]]; then
-  echo "  PTHREAD_POOL_SIZE=${PTHREAD_POOL_SIZE}"
-else
-  echo "  PTHREAD_POOL_SIZE=disabled"
-fi
 echo "  OUTPUT_DIR=${OUTPUT_DIR}"
 
 pushd "${ROOT_DIR}" >/dev/null
