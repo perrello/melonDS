@@ -6,6 +6,9 @@ HAVE_OPENGL    := 0
 HAVE_OPENGLES3 := 0
 HAVE_THREADS   := 0
 HAVE_WIFI      := 1
+HAVE_SLIRP     := 0
+SLIRP_CFLAGS   :=
+SLIRP_LIBS     :=
 CHEEVOS        := 1
 
 SPACE :=
@@ -49,6 +52,15 @@ endif
 # arch
 ifeq (,$(ARCH))
    ARCH = $(shell uname -m)
+endif
+
+# Optional slirp (WFC/LAN indirect mode)
+ifneq ($(platform), emscripten)
+   ifneq ($(shell pkg-config --exists slirp 2>/dev/null && echo 1),)
+      HAVE_SLIRP   := 1
+      SLIRP_CFLAGS := $(shell pkg-config --cflags slirp 2>/dev/null)
+      SLIRP_LIBS   := $(shell pkg-config --libs slirp 2>/dev/null)
+   endif
 endif
 
 CORE_DIR    += ./src/libretro

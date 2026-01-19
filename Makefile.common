@@ -112,6 +112,15 @@ ifeq ($(HAVE_WIFI), 1)
 DEFINES += -DHAVE_WIFI
 endif
 
+ifeq ($(HAVE_SLIRP), 1)
+SOURCES_CXX += $(MELON_DIR)/frontend/qt_sdl/LAN_Socket.cpp
+INCFLAGS    += -I$(MELON_DIR)/frontend
+DEFINES     += -DHAVE_SLIRP
+CFLAGS      += $(SLIRP_CFLAGS)
+CXXFLAGS    += $(SLIRP_CFLAGS)
+LIBS        += $(SLIRP_LIBS)
+endif
+
 # TODO: re-add when neon is implemented upstream
 ifeq ($(HAVE_NEON), 1)
 # SOURCES_CXX += $(MELON_DIR)/GPU2D_Neon.cpp

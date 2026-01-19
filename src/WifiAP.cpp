@@ -18,6 +18,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
 #include "NDS.h"
 #include "Wifi.h"
 #include "WifiAP.h"
@@ -77,6 +80,24 @@ u8 LANBuffer[2048];
 // this is a lazy AP, we only keep track of one client
 // 0=disconnected 1=authenticated 2=associated
 int ClientStatus;
+
+#ifdef __EMSCRIPTEN__
+static bool gLogAuthOnce = false;
+static bool gLogAssocOnce = false;
+static bool gLogDataBeforeAssocOnce = false;
+static bool gLogDataBadBitsOnce = false;
+static bool gLogDataNonSnapOnce = false;
+static bool gLogLanForwardOnce = false;
+static bool gLogLanRecvOnce = false;
+
+static void LogOnce(bool *flag, const char *msg)
+{
+    if (!*flag) {
+        *flag = true;
+        emscripten_log(EM_LOG_CONSOLE, "%s", msg);
+    }
+}
+#endif
 
 
 bool Init()
@@ -173,6 +194,9 @@ int HandleManagementFrame(u8* data, int len)
 
             ClientStatus = 2;
             printf("wifiAP: client associated\n");
+#ifdef __EMSCRIPTEN__
+            LogOnce(&gLogAssocOnce, "[WFC] wifiAP assoc");
+#endif
 
             PWRITE_16(p, 0x0010);
             PWRITE_16(p, 0x0000); // duration??
@@ -245,6 +269,9 @@ int HandleManagementFrame(u8* data, int len)
 
             ClientStatus = 1;
             printf("wifiAP: client authenticated\n");
+#ifdef __EMSCRIPTEN__
+            LogOnce(&gLogAuthOnce, "[WFC] wifiAP auth");
+#endif
 
             PWRITE_16(p, 0x00B0);
             PWRITE_16(p, 0x0000); // duration??
@@ -309,6 +336,9 @@ int SendPacket(u8* data, int len)
         {
             if ((framectl & 0x0300) != 0x0100)
             {
+#ifdef __EMSCRIPTEN__
+                LogOnce(&gLogDataBadBitsOnce, "[WFC] wifiAP data drop (bad toDS/fromDS)");
+#endif
                 printf("wifiAP: got data frame with bad fromDS/toDS bits %04X\n", framectl);
                 return 0;
             }
@@ -319,6 +349,9 @@ int SendPacket(u8* data, int len)
             {
                 if (ClientStatus != 2)
                 {
+#ifdef __EMSCRIPTEN__
+                    LogOnce(&gLogDataBeforeAssocOnce, "[WFC] wifiAP data before assoc");
+#endif
                     printf("wifiAP: trying to send shit without being associated\n");
                     return 0;
                 }
@@ -330,7 +363,16 @@ int SendPacket(u8* data, int len)
                 *(u16*)&LANBuffer[12] = *(u16*)&data[30]; // type
                 memcpy(&LANBuffer[14], &data[32], lan_len - 14);
 
+#ifdef __EMSCRIPTEN__
+                LogOnce(&gLogLanForwardOnce, "[WFC] wifiAP forward LAN packet");
+#endif
                 Platform::LAN_SendPacket(LANBuffer, lan_len);
+            }
+            else
+            {
+#ifdef __EMSCRIPTEN__
+                LogOnce(&gLogDataNonSnapOnce, "[WFC] wifiAP data drop (non-SNAP)");
+#endif
             }
         }
         return len;
@@ -400,6 +442,9 @@ int RecvPacket(u8* data)
     int rxlen = Platform::LAN_RecvPacket(LANBuffer);
     if (rxlen > 0)
     {
+#ifdef __EMSCRIPTEN__
+        LogOnce(&gLogLanRecvOnce, "[WFC] wifiAP got LAN reply");
+#endif
         // check destination MAC
         if (!MACIsBroadcast(&LANBuffer[0]))
         {

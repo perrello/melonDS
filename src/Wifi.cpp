@@ -369,7 +369,7 @@ void StartTX_Cmd()
 
     // TODO: cancel the transfer if there isn't enough time left (check CMDCOUNT)
 
-    if (IOPORT(W_TXSlotCmd) & 0x7000) printf("wifi: !! unusual TXSLOT_CMD bits set %04X\n", IOPORT(W_TXSlotCmd));
+    if (IOPORT(W_TXSlotCmd) & 0x3000) printf("wifi: !! unusual TXSLOT_CMD bits set %04X\n", IOPORT(W_TXSlotCmd));
 
     slot->Addr = (IOPORT(W_TXSlotCmd) & 0x0FFF) << 1;
     slot->Length = *(u16*)&RAM[slot->Addr + 0xA] & 0x3FFF;
@@ -642,10 +642,10 @@ bool ProcessTX(TXSlot* slot, int num)
                 *(u64*)&RAM[slot->Addr + 0xC + 24] = USCounter;
             }
 
-            //u32 noseqno = 0;
-            //if (num == 1) noseqno = (IOPORT(W_TXSlotCmd) & 0x4000);
+            u32 noseqno = 0;
+            if (num == 1) noseqno = (IOPORT(W_TXSlotCmd) & 0x4000);
 
-            //if (!noseqno)
+            if (!noseqno)
             {
                 *(u16*)&RAM[slot->Addr + 0xC + 22] = IOPORT(W_TXSeqNo) << 4;
                 IOPORT(W_TXSeqNo) = (IOPORT(W_TXSeqNo) + 1) & 0x0FFF;

@@ -3,6 +3,22 @@
 
 #include <stdint.h>
 
+// Prefix symbols to avoid collisions when linked into larger projects.
+#ifndef TINYAES_PREFIX
+#define TINYAES_PREFIX melonds_
+#endif
+#define TINYAES_CONCAT(a, b) a##b
+#define TINYAES_CONCAT2(a, b) TINYAES_CONCAT(a, b)
+
+#define AES_init_ctx TINYAES_CONCAT2(TINYAES_PREFIX, AES_init_ctx)
+#define AES_init_ctx_iv TINYAES_CONCAT2(TINYAES_PREFIX, AES_init_ctx_iv)
+#define AES_ctx_set_iv TINYAES_CONCAT2(TINYAES_PREFIX, AES_ctx_set_iv)
+#define AES_ECB_encrypt TINYAES_CONCAT2(TINYAES_PREFIX, AES_ECB_encrypt)
+#define AES_ECB_decrypt TINYAES_CONCAT2(TINYAES_PREFIX, AES_ECB_decrypt)
+#define AES_CBC_encrypt_buffer TINYAES_CONCAT2(TINYAES_PREFIX, AES_CBC_encrypt_buffer)
+#define AES_CBC_decrypt_buffer TINYAES_CONCAT2(TINYAES_PREFIX, AES_CBC_decrypt_buffer)
+#define AES_CTR_xcrypt_buffer TINYAES_CONCAT2(TINYAES_PREFIX, AES_CTR_xcrypt_buffer)
+
 // #define the macros below to 1/0 to enable/disable the mode of operation.
 //
 // CBC enables AES encryption in CBC-mode of operation.
