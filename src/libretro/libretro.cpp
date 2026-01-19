@@ -840,7 +840,7 @@ static bool _handle_load_game(unsigned type, const struct retro_game_info *info)
    if (environ_cb(RETRO_ENVIRONMENT_GET_USERNAME, &retro_username) && retro_username)
       strcpy(Config::FirmwareUsername, retro_username);
    else
-      strcpy(Config::FirmwareUsername, "melonDS");
+      strcpy(Config::FirmwareUsername, "Foxol");
 
    struct retro_input_descriptor desc[] = {
       { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,  "Left" },

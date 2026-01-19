@@ -113,7 +113,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "melonds_use_fw_settings",
       "Use Firmware Settings",
       NULL,
-      "Use language and username from the DS firmware. When disabled or if firmware file was not found, the username will be provided by the Libretro frontend, if it's empty it will default to 'melonDS'.",
+      "Use language and username from the DS firmware. When disabled or if firmware file was not found, the username will be provided by the Libretro frontend, if it's empty it will default to 'Foxol'.",
       NULL,
       "system",
       {
