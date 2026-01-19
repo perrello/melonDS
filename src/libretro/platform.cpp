@@ -81,6 +81,7 @@ u8 PacketBuffer[2048];
 namespace
 {
    std::deque<std::vector<u8>> mp_rx_queue;
+   std::deque<std::vector<u8>> lan_rx_queue;
    int mp_client_id = 0;
    int mp_client_count = 0;
 }
@@ -111,6 +112,15 @@ EM_JS(void, netpacket_bridge_disconnected, (int clientId), {
    }
 });
 
+EM_JS(void, lan_packet_bridge_send, (const u8* data, int len), {
+   if (typeof Module === 'undefined') return;
+   var bridge = Module.LANPacketBridge;
+   if (bridge && typeof bridge.onSend === 'function') {
+      var payload = HEAPU8.slice(data, data + len);
+      bridge.onSend(payload);
+   }
+});
+
 extern "C" {
 EMSCRIPTEN_KEEPALIVE
 void netpacket_receive(const u8* data, int len, int client_id)
@@ -130,6 +140,17 @@ void netpacket_set_client_state(int client_id, int max_clients)
    mp_client_id = client_id;
    mp_client_count = max_clients;
    netpacket_bridge_connected(client_id, max_clients);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void lan_packet_receive(const u8* data, int len)
+{
+   if (!data || len <= 0)
+      return;
+
+   std::vector<u8> frame(len);
+   memcpy(frame.data(), data, len);
+   lan_rx_queue.push_back(std::move(frame));
 }
 } // extern "C"
 #endif
@@ -466,7 +487,10 @@ namespace Platform
 
    bool LAN_Init()
    {
-#ifdef HAVE_PCAP
+#ifdef __EMSCRIPTEN__
+      lan_rx_queue.clear();
+      return true;
+#elif defined(HAVE_PCAP)
     if (Config::DirectLAN)
     {
         if (!LAN_PCap::Init(true))
@@ -486,12 +510,15 @@ namespace Platform
 
    void LAN_DeInit()
    {
+#ifdef __EMSCRIPTEN__
+      lan_rx_queue.clear();
+      return;
+#elif defined(HAVE_PCAP)
       // checkme. blarg
       //if (Config::DirectLAN)
       //    LAN_PCap::DeInit();
       //else
       //    LAN_Socket::DeInit();
-#ifdef HAVE_PCAP
       LAN_PCap::DeInit();
       LAN_Socket::DeInit();
 #endif
@@ -499,7 +526,18 @@ namespace Platform
 
    int LAN_SendPacket(u8* data, int len)
    {
-#ifdef HAVE_PCAP
+#ifdef __EMSCRIPTEN__
+      if (len <= 0)
+         return 0;
+      if (len > 2048)
+      {
+         printf("LAN_SendPacket: error: packet too long (%d)\n", len);
+         return 0;
+      }
+
+      lan_packet_bridge_send(data, len);
+      return len;
+#elif defined(HAVE_PCAP)
       if (Config::DirectLAN)
          return LAN_PCap::SendPacket(data, len);
       else
@@ -511,7 +549,20 @@ namespace Platform
 
    int LAN_RecvPacket(u8* data)
    {
-#ifdef HAVE_PCAP
+#ifdef __EMSCRIPTEN__
+      if (lan_rx_queue.empty())
+         return 0;
+
+      std::vector<u8> frame = std::move(lan_rx_queue.front());
+      lan_rx_queue.pop_front();
+
+      int len = (int)frame.size();
+      if (len > 2048)
+         len = 2048;
+
+      memcpy(data, frame.data(), len);
+      return len;
+#elif defined(HAVE_PCAP)
       if (Config::DirectLAN)
          return LAN_PCap::RecvPacket(data);
       else

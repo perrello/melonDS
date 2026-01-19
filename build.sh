@@ -24,12 +24,18 @@ MAKE_ARGS="${MAKE_ARGS:-}"
 EMCC_ARGS="${EMCC_ARGS:-}"
 BUILD_CORE_JS="${BUILD_CORE_JS:-1}"
 BUILD_RETROARCH="${BUILD_RETROARCH:-1}"
+if [[ "${BUILD_RETROARCH}" != "1" ]]; then
+  echo "ERROR: BUILD_RETROARCH is locked to 1 in this script." >&2
+  exit 1
+fi
+BUILD_RETROARCH=1
 LIBRETRO_NAME="${LIBRETRO_NAME:-melonds}"
 RETROARCH_DIR="${RETROARCH_DIR:-${ROOT_DIR}/retroarch-linker}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist-wasm}"
 RA_MAKE_ARGS="${RA_MAKE_ARGS:-HAVE_AL=0 HAVE_CHEEVOS=1}"
+RA_TARGET="${RA_TARGET:-${LIBRETRO_NAME}.js}"
 ENABLE_PTHREADS="${ENABLE_PTHREADS:-0}"
-PTHREAD_POOL_SIZE="${PTHREAD_POOL_SIZE:-4}"
+PTHREAD_POOL_SIZE="${PTHREAD_POOL_SIZE:-}"
 RA_JOBS="${RA_JOBS:-}"
 RA_CLEAN="${RA_CLEAN:-1}"
 RETROARCH_REPO="${RETROARCH_REPO:-https://github.com/libretro/RetroArch}"
@@ -41,17 +47,84 @@ if [[ -n "${RA_JOBS}" ]]; then
   RA_JOBS_ARG="-j${RA_JOBS}"
 fi
 
+normalize_bool() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) echo "1" ;;
+    *) echo "0" ;;
+  esac
+}
+
+sanitize_make_args() {
+  local input="${1:-}"
+  local output=""
+  set -- ${input}
+  while [[ $# -gt 0 ]]; do
+    local token="$1"
+    shift
+    case "${token}" in
+      HAVE_THREADS=*|PTHREAD_POOL_SIZE=*) continue ;;
+    esac
+    if [[ -n "${output}" ]]; then
+      output+=" "
+    fi
+    output+="${token}"
+  done
+  printf "%s" "${output}"
+}
+
+sanitize_flag_list() {
+  local input="${1:-}"
+  local output=""
+  set -- ${input}
+  while [[ $# -gt 0 ]]; do
+    local token="$1"
+    shift
+    if [[ "${token}" == "-pthread" ]]; then
+      continue
+    fi
+    if [[ "${token}" == "-s" && $# -gt 0 ]]; then
+      local next="$1"
+      if [[ "${next}" == "SHARED_MEMORY" || "${next}" == PTHREAD_POOL_SIZE=* ]]; then
+        shift
+        continue
+      fi
+    fi
+    if [[ -n "${output}" ]]; then
+      output+=" "
+    fi
+    output+="${token}"
+  done
+  printf "%s" "${output}"
+}
+
+ENABLE_PTHREADS="$(normalize_bool "${ENABLE_PTHREADS}")"
+MAKE_ARGS="$(sanitize_make_args "${MAKE_ARGS}")"
+RA_MAKE_ARGS="$(sanitize_make_args "${RA_MAKE_ARGS}")"
+EMCC_ARGS="$(sanitize_flag_list "${EMCC_ARGS}")"
+
+clean_cflags="$(sanitize_flag_list "${CFLAGS:-}")"
+clean_cxxflags="$(sanitize_flag_list "${CXXFLAGS:-}")"
+clean_ldflags="$(sanitize_flag_list "${LDFLAGS:-}")"
+
 MAKE_ENV=()
 if [[ "${ENABLE_PTHREADS}" == "1" ]]; then
+  PTHREAD_POOL_SIZE="${PTHREAD_POOL_SIZE:-4}"
   pthreads_cflags="-pthread -s SHARED_MEMORY"
   pthreads_ldflags="-pthread -s SHARED_MEMORY -s PTHREAD_POOL_SIZE=${PTHREAD_POOL_SIZE}"
   MAKE_ARGS="${MAKE_ARGS} HAVE_THREADS=1"
   EMCC_ARGS="${EMCC_ARGS} ${pthreads_ldflags}"
   RA_MAKE_ARGS="${RA_MAKE_ARGS} HAVE_THREADS=1 PTHREAD_POOL_SIZE=${PTHREAD_POOL_SIZE}"
-  MAKE_ENV+=("CFLAGS=${CFLAGS:+${CFLAGS} }${pthreads_cflags}")
-  MAKE_ENV+=("CXXFLAGS=${CXXFLAGS:+${CXXFLAGS} }${pthreads_cflags}")
-  MAKE_ENV+=("LDFLAGS=${LDFLAGS:+${LDFLAGS} }${pthreads_ldflags}")
+  clean_cflags="${clean_cflags:+${clean_cflags} }${pthreads_cflags}"
+  clean_cxxflags="${clean_cxxflags:+${clean_cxxflags} }${pthreads_cflags}"
+  clean_ldflags="${clean_ldflags:+${clean_ldflags} }${pthreads_ldflags}"
+else
+  PTHREAD_POOL_SIZE=""
+  MAKE_ARGS="${MAKE_ARGS} HAVE_THREADS=0"
+  RA_MAKE_ARGS="${RA_MAKE_ARGS} HAVE_THREADS=0"
 fi
+MAKE_ENV+=("CFLAGS=${clean_cflags}")
+MAKE_ENV+=("CXXFLAGS=${clean_cxxflags}")
+MAKE_ENV+=("LDFLAGS=${clean_ldflags}")
 
 if [[ -z "${STATIC_LINKING}" ]]; then
   if [[ "${BUILD_RETROARCH}" != "0" ]]; then
@@ -61,17 +134,36 @@ if [[ -z "${STATIC_LINKING}" ]]; then
   fi
 fi
 
+if [[ "${BUILD_RETROARCH}" != "0" ]]; then
+  if [[ -z "${OUTPUT_DIR}" || "${OUTPUT_DIR}" == "/" ]]; then
+    echo "ERROR: refusing to clean OUTPUT_DIR='${OUTPUT_DIR}'" >&2
+    exit 1
+  fi
+  if [[ -d "${OUTPUT_DIR}" ]]; then
+    find "${OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  fi
+fi
+
+echo "Build config:"
+echo "  BUILD_RETROARCH=${BUILD_RETROARCH}"
+echo "  ENABLE_PTHREADS=${ENABLE_PTHREADS}"
+echo "  MAKE_ARGS=${MAKE_ARGS}"
+echo "  RA_MAKE_ARGS=${RA_MAKE_ARGS}"
+echo "  RA_TARGET=${RA_TARGET}"
+echo "  EMCC_ARGS=${EMCC_ARGS}"
+if [[ "${ENABLE_PTHREADS}" == "1" ]]; then
+  echo "  PTHREAD_POOL_SIZE=${PTHREAD_POOL_SIZE}"
+else
+  echo "  PTHREAD_POOL_SIZE=disabled"
+fi
+echo "  OUTPUT_DIR=${OUTPUT_DIR}"
+
 pushd "${ROOT_DIR}" >/dev/null
 
 make_clean_cmd=(emmake make -f Makefile platform=emscripten CC=emcc CXX=em++ AR=emar RANLIB=emranlib clean STATIC_LINKING="${STATIC_LINKING}" ${MAKE_ARGS})
 make_build_cmd=(emmake make -f Makefile platform=emscripten CC=emcc CXX=em++ AR=emar RANLIB=emranlib STATIC_LINKING="${STATIC_LINKING}" ${MAKE_ARGS})
-if [[ ${#MAKE_ENV[@]} -gt 0 ]]; then
-  env "${MAKE_ENV[@]}" "${make_clean_cmd[@]}"
-  env "${MAKE_ENV[@]}" "${make_build_cmd[@]}"
-else
-  "${make_clean_cmd[@]}"
-  "${make_build_cmd[@]}"
-fi
+env "${MAKE_ENV[@]}" "${make_clean_cmd[@]}"
+env "${MAKE_ENV[@]}" "${make_build_cmd[@]}"
 
 if [[ "${BUILD_CORE_JS}" != "0" ]]; then
   if [[ -z "${OUT}" ]]; then
@@ -104,26 +196,31 @@ if [[ "${BUILD_RETROARCH}" != "0" ]]; then
     fi
   fi
 
+  ra_target_base="${RA_TARGET%.js}"
+  if [[ "${ENABLE_PTHREADS}" != "1" ]]; then
+    rm -f "${RETROARCH_DIR}/${ra_target_base}.worker.js" "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.worker.js"
+  fi
+
   mkdir -p "${OUTPUT_DIR}"
   cp "${BC_FILE}" "${RETROARCH_DIR}/libretro_emscripten.bc"
   cp "${BC_FILE}" "${RETROARCH_DIR}/libretro_emscripten.a"
 
   pushd "${RETROARCH_DIR}" >/dev/null
   if [[ "${RA_CLEAN}" != "0" ]]; then
-    emmake make -f Makefile.emscripten LIBRETRO="${LIBRETRO_NAME}" clean ${RA_MAKE_ARGS}
+    emmake make -f Makefile.emscripten LIBRETRO="${LIBRETRO_NAME}" TARGET="${RA_TARGET}" clean ${RA_MAKE_ARGS}
   fi
-  emmake make -f Makefile.emscripten LIBRETRO="${LIBRETRO_NAME}" ${RA_MAKE_ARGS} ${RA_JOBS_ARG} all
+  emmake make -f Makefile.emscripten LIBRETRO="${LIBRETRO_NAME}" TARGET="${RA_TARGET}" ${RA_MAKE_ARGS} ${RA_JOBS_ARG} all
   popd >/dev/null
 
-  cp "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.js" "${OUTPUT_DIR}/${LIBRETRO_NAME}.js"
-  cp "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.wasm" "${OUTPUT_DIR}/${LIBRETRO_NAME}.wasm"
-  if [[ -f "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.worker.js" ]]; then
-    cp "${RETROARCH_DIR}/${LIBRETRO_NAME}_libretro.worker.js" "${OUTPUT_DIR}/${LIBRETRO_NAME}_libretro.worker.js"
+  cp "${RETROARCH_DIR}/${RA_TARGET}" "${OUTPUT_DIR}/${RA_TARGET}"
+  cp "${RETROARCH_DIR}/${ra_target_base}.wasm" "${OUTPUT_DIR}/${ra_target_base}.wasm"
+  if [[ "${ENABLE_PTHREADS}" == "1" && -f "${RETROARCH_DIR}/${ra_target_base}.worker.js" ]]; then
+    cp "${RETROARCH_DIR}/${ra_target_base}.worker.js" "${OUTPUT_DIR}/${ra_target_base}.worker.js"
   fi
 
-  echo "Built RetroArch JS: ${OUTPUT_DIR}/${LIBRETRO_NAME}.js"
-  echo "Built RetroArch WASM: ${OUTPUT_DIR}/${LIBRETRO_NAME}.wasm"
-  if [[ -f "${OUTPUT_DIR}/${LIBRETRO_NAME}_libretro.worker.js" ]]; then
-    echo "Built RetroArch worker JS: ${OUTPUT_DIR}/${LIBRETRO_NAME}_libretro.worker.js"
+  echo "Built RetroArch JS: ${OUTPUT_DIR}/${RA_TARGET}"
+  echo "Built RetroArch WASM: ${OUTPUT_DIR}/${ra_target_base}.wasm"
+  if [[ "${ENABLE_PTHREADS}" == "1" && -f "${OUTPUT_DIR}/${ra_target_base}.worker.js" ]]; then
+    echo "Built RetroArch worker JS: ${OUTPUT_DIR}/${ra_target_base}.worker.js"
   fi
 fi

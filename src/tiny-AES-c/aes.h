@@ -3,6 +3,19 @@
 
 #include <stdint.h>
 
+// Prefix symbols to avoid collisions with other AES implementations (e.g. rcheevos).
+#ifndef MELONDS_TINYAES_NO_PREFIX
+#define MELONDS_TINYAES_NAME(name) MELONDS_##name
+#define AES_init_ctx MELONDS_TINYAES_NAME(AES_init_ctx)
+#define AES_init_ctx_iv MELONDS_TINYAES_NAME(AES_init_ctx_iv)
+#define AES_ctx_set_iv MELONDS_TINYAES_NAME(AES_ctx_set_iv)
+#define AES_ECB_encrypt MELONDS_TINYAES_NAME(AES_ECB_encrypt)
+#define AES_ECB_decrypt MELONDS_TINYAES_NAME(AES_ECB_decrypt)
+#define AES_CBC_encrypt_buffer MELONDS_TINYAES_NAME(AES_CBC_encrypt_buffer)
+#define AES_CBC_decrypt_buffer MELONDS_TINYAES_NAME(AES_CBC_decrypt_buffer)
+#define AES_CTR_xcrypt_buffer MELONDS_TINYAES_NAME(AES_CTR_xcrypt_buffer)
+#endif
+
 // #define the macros below to 1/0 to enable/disable the mode of operation.
 //
 // CBC enables AES encryption in CBC-mode of operation.

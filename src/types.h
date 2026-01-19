@@ -21,6 +21,14 @@
 
 #include <stdint.h>
 
+#ifdef MELONDS_SILENT
+#include <stdio.h>
+#ifdef printf
+#undef printf
+#endif
+#define printf(...) do { } while (0)
+#endif
+
 typedef uint8_t     u8;
 typedef uint16_t    u16;
 typedef uint32_t    u32;
