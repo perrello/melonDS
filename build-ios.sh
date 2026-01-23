@@ -43,7 +43,7 @@ RETROARCH_MAKE_FLAGS_NOPTHREADS=(
   # RetroArch default ALLOW_MEMORY_GROWTH was 1 (enabled).
   # Good for newer IOS "ALLOW_MEMORY_GROWTH=1" "INITIAL_HEAP=1073741824"
   "ALLOW_MEMORY_GROWTH=1"
-  "INITIAL_HEAP=268435456"
+  "INITIAL_HEAP=1073741824"
 )
 
 # Toolchain flags for the core build.
