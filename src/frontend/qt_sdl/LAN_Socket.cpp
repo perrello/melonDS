@@ -21,6 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <cctype>
+#include <stdarg.h>
 #include "Wifi.h"
 #include "LAN_Socket.h"
 #include "Config.h"
@@ -53,6 +55,170 @@ FIFO<u32, (0x8000 >> 2)> RXBuffer;
 u32 IPv4ID;
 
 Slirp* Ctx = nullptr;
+
+namespace
+{
+
+inline u16 ReadBE16(const u8* p)
+{
+    return (u16)((p[0] << 8) | p[1]);
+}
+
+inline u32 ReadBE32(const u8* p)
+{
+    return (u32)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
+}
+
+void Append(char* out, size_t outlen, size_t& used, const char* fmt, ...)
+{
+    if (used >= outlen) return;
+    va_list args;
+    va_start(args, fmt);
+    int wrote = vsnprintf(out + used, outlen - used, fmt, args);
+    va_end(args);
+    if (wrote > 0) used += (size_t)wrote;
+}
+
+void MacToStr(const u8* mac, char* out, size_t outlen)
+{
+    if (outlen < 18) { if (outlen) out[0] = '\0'; return; }
+    snprintf(out, outlen, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+void IPv4ToStr(const u8* ip, char* out, size_t outlen)
+{
+    snprintf(out, outlen, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+
+void TcpFlagsToStr(u8 flags, char* out, size_t outlen)
+{
+    char tmp[8];
+    int o = 0;
+    if (flags & 0x01) tmp[o++] = 'F';
+    if (flags & 0x02) tmp[o++] = 'S';
+    if (flags & 0x04) tmp[o++] = 'R';
+    if (flags & 0x08) tmp[o++] = 'P';
+    if (flags & 0x10) tmp[o++] = 'A';
+    if (flags & 0x20) tmp[o++] = 'U';
+    if (flags & 0x40) tmp[o++] = 'E';
+    if (flags & 0x80) tmp[o++] = 'C';
+    tmp[o] = '\0';
+    snprintf(out, outlen, "%s", o ? tmp : "-");
+}
+
+void DescribeDns(const u8* payload, int payloadLen, char* out, size_t outlen, size_t& used)
+{
+    if (payloadLen < 12) return;
+    u16 id = ReadBE16(payload);
+    u16 flags = ReadBE16(payload + 2);
+    u16 qd = ReadBE16(payload + 4);
+    u16 an = ReadBE16(payload + 6);
+    Append(out, outlen, used, " dns id=%04X flags=%04X q=%u a=%u", id, flags, qd, an);
+
+    if (qd == 0) return;
+    int off = 12;
+    char name[128];
+    int nameLen = 0;
+    while (off < payloadLen && payload[off] != 0)
+    {
+        u8 len = payload[off];
+        if (len & 0xC0) { off += 2; break; } // pointer
+        off++;
+        for (int i = 0; i < len && off < payloadLen && nameLen < (int)sizeof(name)-1; i++, off++)
+        {
+            name[nameLen++] = (char)payload[off];
+        }
+        if (nameLen < (int)sizeof(name)-1) name[nameLen++] = '.';
+    }
+    if (nameLen > 0 && name[nameLen-1] == '.') nameLen--;
+    name[nameLen] = '\0';
+    if (off < payloadLen) off++;
+    if (off + 4 <= payloadLen)
+    {
+        u16 qtype = ReadBE16(payload + off);
+        u16 qclass = ReadBE16(payload + off + 2);
+        Append(out, outlen, used, " qname=%s qtype=%u qclass=%u", name, qtype, qclass);
+    }
+}
+
+void DescribeFrame(const u8* data, int len, char* out, size_t outlen)
+{
+    size_t used = 0;
+    if (len < 14)
+    {
+        Append(out, outlen, used, "len=%d (short)", len);
+        return;
+    }
+
+    char dstmac[32], srcmac[32];
+    MacToStr(data, dstmac, sizeof(dstmac));
+    MacToStr(data + 6, srcmac, sizeof(srcmac));
+    u16 ethertype = ReadBE16(data + 12);
+    Append(out, outlen, used, "eth dst=%s src=%s type=0x%04X len=%d", dstmac, srcmac, ethertype, len);
+
+    if (ethertype == 0x0800 && len >= 34)
+    {
+        u8 ihl = (data[14] & 0x0F) * 4;
+        if (ihl < 20 || len < 14 + ihl) return;
+        u8 proto = data[23];
+        char srcip[32], dstip[32];
+        IPv4ToStr(data + 26, srcip, sizeof(srcip));
+        IPv4ToStr(data + 30, dstip, sizeof(dstip));
+        Append(out, outlen, used, " ip %s -> %s proto=%u", srcip, dstip, proto);
+
+        int l4 = 14 + ihl;
+        int payloadLen = len - l4;
+        if (proto == 6 && payloadLen >= 20)
+        {
+            u16 sport = ReadBE16(data + l4);
+            u16 dport = ReadBE16(data + l4 + 2);
+            u32 seq = ReadBE32(data + l4 + 4);
+            u32 ack = ReadBE32(data + l4 + 8);
+            u8 dataoff = (data[l4 + 12] >> 4) * 4;
+            u8 flags = data[l4 + 13];
+            u16 win = ReadBE16(data + l4 + 14);
+            char fstr[16];
+            TcpFlagsToStr(flags, fstr, sizeof(fstr));
+            Append(out, outlen, used, " tcp %u -> %u flags=%s seq=%u ack=%u win=%u", sport, dport, fstr, seq, ack, win);
+
+            int poff = l4 + dataoff;
+            int plen = len - poff;
+            if (plen > 0)
+            {
+                Append(out, outlen, used, " payload=%d", plen);
+                if (plen >= 2 && data[poff] == 0x16 && data[poff+1] == 0x03)
+                    Append(out, outlen, used, " tls=handshake");
+                else if (plen >= 2 && data[poff] == 0x15 && data[poff+1] == 0x03)
+                    Append(out, outlen, used, " tls=alert");
+                else if (plen >= 4 && memcmp(&data[poff], "GET ", 4) == 0)
+                    Append(out, outlen, used, " http=GET");
+                else if (plen >= 5 && memcmp(&data[poff], "POST ", 5) == 0)
+                    Append(out, outlen, used, " http=POST");
+            }
+        }
+        else if (proto == 17 && payloadLen >= 8)
+        {
+            u16 sport = ReadBE16(data + l4);
+            u16 dport = ReadBE16(data + l4 + 2);
+            Append(out, outlen, used, " udp %u -> %u", sport, dport);
+            int uoff = l4 + 8;
+            int ulen = len - uoff;
+            if (sport == 53 || dport == 53)
+                DescribeDns(data + uoff, ulen, out, outlen, used);
+        }
+    }
+    else if (ethertype == 0x0806 && len >= 42)
+    {
+        u16 oper = ReadBE16(data + 20);
+        char spa[32], tpa[32];
+        IPv4ToStr(data + 28, spa, sizeof(spa));
+        IPv4ToStr(data + 38, tpa, sizeof(tpa));
+        Append(out, outlen, used, " arp op=%u %s -> %s", oper, spa, tpa);
+    }
+}
+
+}
 
 /*const int FDListMax = 64;
 struct pollfd FDList[FDListMax];
@@ -107,6 +273,11 @@ ssize_t SlirpCbSendPacket(const void* buf, size_t len, void* opaque)
     }
 
     printf("slirp: response packet of %zu bytes, type %04X\n", len, ntohs(((u16*)buf)[6]));
+    {
+        char summary[512];
+        DescribeFrame((const u8*)buf, (int)len, summary, sizeof(summary));
+        printf("LAN_RX: %s\n", summary);
+    }
 
     RXEnqueue(buf, len);
 
@@ -421,6 +592,12 @@ void HandleDNSFrame(u8* data, int len)
     if (framelen & 1) { *out++ = 0; framelen++; }
     FinishUDPFrame(resp, framelen);
 
+    {
+        char summary[512];
+        DescribeFrame(resp, (int)framelen, summary, sizeof(summary));
+        printf("LAN_RX (dns): %s\n", summary);
+    }
+
     RXEnqueue(resp, framelen);
 }
 
@@ -432,6 +609,12 @@ int SendPacket(u8* data, int len)
     {
         printf("LAN_SendPacket: error: packet too long (%d)\n", len);
         return 0;
+    }
+
+    {
+        char summary[512];
+        DescribeFrame(data, len, summary, sizeof(summary));
+        printf("LAN_TX: %s\n", summary);
     }
 
     u16 ethertype = ntohs(*(u16*)&data[0xC]);

@@ -47,9 +47,25 @@ u8 Alarm2[3];
 u8 ClockAdjust;
 u8 FreeReg;
 
+static bool RTCLogOnce = false;
+
 
 bool Init()
 {
+    if (!RTCLogOnce)
+    {
+        RTCLogOnce = true;
+        time_t timestamp = time(NULL);
+        struct tm timedata;
+        localtime_r(&timestamp, &timedata);
+        printf("[WFC][RTC] host time %04d-%02d-%02d %02d:%02d:%02d\n",
+               timedata.tm_year + 1900,
+               timedata.tm_mon + 1,
+               timedata.tm_mday,
+               timedata.tm_hour,
+               timedata.tm_min,
+               timedata.tm_sec);
+    }
     return true;
 }
 

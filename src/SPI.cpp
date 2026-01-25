@@ -48,6 +48,8 @@ u8 CurCmd;
 u32 DataPos;
 u8 Data;
 
+static bool WFCLogOnce = false;
+
 u8 StatusReg;
 u32 Addr;
 
@@ -84,6 +86,22 @@ extern "C" {
 EMSCRIPTEN_KEEPALIVE void melonds_set_wfc_dns(u8 a, u8 b, u8 c, u8 d)
 {
     SPI_Firmware::DNS = { a, b, c, d };
+    printf("[WFC][SPI] set DNS %u.%u.%u.%u\n", a, b, c, d);
+
+    // If firmware is already loaded, apply DNS immediately so games see it.
+    if (SPI_Firmware::Firmware && SPI_Firmware::FirmwareLength != 0)
+    {
+        u32 userdata = 0x7FE00 & SPI_Firmware::FirmwareMask;
+        u32 apdata = userdata - 0x400;
+        if (apdata + 0xFE <= SPI_Firmware::FirmwareLength)
+        {
+            memcpy(&SPI_Firmware::Firmware[apdata + 0xC8], SPI_Firmware::DNS.data(), 4);
+            memcpy(&SPI_Firmware::Firmware[apdata + 0xCC], SPI_Firmware::DNS.data(), 4);
+            SPI_Firmware::Firmware[apdata + 0xEF] = 0x01; // Configured
+            *(u16*)&SPI_Firmware::Firmware[apdata + 0xFE] =
+                CRC16(&SPI_Firmware::Firmware[apdata], 0xFE, 0x0000);
+        }
+    }
 }
 
 EMSCRIPTEN_KEEPALIVE void melonds_set_wfc_id_flags_u32(u32 id_lo, u32 id_hi, u32 flags_lo, u32 flags_hi)
@@ -92,6 +110,22 @@ EMSCRIPTEN_KEEPALIVE void melonds_set_wfc_id_flags_u32(u32 id_lo, u32 id_hi, u32
     u64 flags = static_cast<u64>(flags_lo) | (static_cast<u64>(flags_hi) << 32);
     SPI_Firmware::wfcID = static_cast<int64_t>(id);
     SPI_Firmware::wfcFlags = static_cast<int64_t>(flags);
+    printf("[WFC][SPI] set ID=0x%llX flags=0x%llX\n",
+           (unsigned long long)id, (unsigned long long)flags);
+
+    // If firmware is already loaded, apply WFC ID/flags immediately.
+    if (SPI_Firmware::Firmware && SPI_Firmware::FirmwareLength != 0)
+    {
+        u32 userdata = 0x7FE00 & SPI_Firmware::FirmwareMask;
+        u32 apdata = userdata - 0x400;
+        if (apdata + 0xFE <= SPI_Firmware::FirmwareLength)
+        {
+            memcpy(&SPI_Firmware::Firmware[apdata + 0xF0], &SPI_Firmware::wfcID, 6);
+            memcpy(&SPI_Firmware::Firmware[apdata + 0xF6], &SPI_Firmware::wfcFlags, 8);
+            *(u16*)&SPI_Firmware::Firmware[apdata + 0xFE] =
+                CRC16(&SPI_Firmware::Firmware[apdata], 0xFE, 0x0000);
+        }
+    }
 }
 
 EMSCRIPTEN_KEEPALIVE void melonds_get_wfc_id_flags_u32(u32* out)
@@ -103,6 +137,12 @@ EMSCRIPTEN_KEEPALIVE void melonds_get_wfc_id_flags_u32(u32* out)
     out[1] = static_cast<u32>((id >> 32) & 0xFFFFFFFFu);
     out[2] = static_cast<u32>(flags & 0xFFFFFFFFu);
     out[3] = static_cast<u32>((flags >> 32) & 0xFFFFFFFFu);
+    if (!SPI_Firmware::WFCLogOnce)
+    {
+        SPI_Firmware::WFCLogOnce = true;
+        printf("[WFC][SPI] get ID=0x%llX flags=0x%llX\n",
+               (unsigned long long)id, (unsigned long long)flags);
+    }
 }
 
 EMSCRIPTEN_KEEPALIVE int melonds_get_wfc_id_flags_from_firmware_u32(u32* out)
@@ -122,6 +162,12 @@ EMSCRIPTEN_KEEPALIVE int melonds_get_wfc_id_flags_from_firmware_u32(u32* out)
     out[1] = static_cast<u32>((id >> 32) & 0xFFFFFFFFu);
     out[2] = static_cast<u32>(flags & 0xFFFFFFFFu);
     out[3] = static_cast<u32>((flags >> 32) & 0xFFFFFFFFu);
+    if (!SPI_Firmware::WFCLogOnce)
+    {
+        SPI_Firmware::WFCLogOnce = true;
+        printf("[WFC][SPI] firmware ID=0x%llX flags=0x%llX\n",
+               (unsigned long long)id, (unsigned long long)flags);
+    }
     return 1;
 }
 }
@@ -266,12 +312,27 @@ void LoadDefaultFirmware()
     *(u16*)&Firmware[userdata+0x72] = CRC16(&Firmware[userdata], 0x70, 0xFFFF);
 
     // wifi access points
+    auto log_wfc_settings = [&](u32 apdata, const char* label)
+    {
+        if (apdata + 0xFE > FirmwareLength) return;
+        const u8* dns = &Firmware[apdata + 0xC8];
+        u64 id = 0;
+        u64 flags = 0;
+        memcpy(&id, &Firmware[apdata + 0xF0], 6);
+        memcpy(&flags, &Firmware[apdata + 0xF6], 8);
+        printf("[WFC][SPI] %s DNS=%u.%u.%u.%u ID=0x%llX flags=0x%llX\n",
+               label,
+               dns[0], dns[1], dns[2], dns[3],
+               (unsigned long long)id, (unsigned long long)flags);
+    };
+
     FILE* f = Platform::OpenLocalFile("wfcsettings.bin", "rb");
     if (f)
     {
         u32 apdata = userdata - 0xA00;
         fread(&Firmware[apdata], 0x900, 1, f);
         fclose(f);
+        log_wfc_settings(apdata, "wfcsettings.bin");
     }
     else
     {
@@ -297,6 +358,7 @@ void LoadDefaultFirmware()
         }
 
         *(u16*)&Firmware[apdata+0xFE] = CRC16(&Firmware[apdata], 0xFE, 0x0000);
+        log_wfc_settings(apdata, "defaults");
 
         apdata += 0x100;
         Firmware[apdata+0xE7] = 0xFF;
@@ -339,6 +401,8 @@ void LoadFirmwareFromFile(FILE* f)
 
     fclose(f);
 
+    printf("[WFC][SPI] firmware file loaded len=%u\n", FirmwareLength);
+
     // take a backup
     char firmbkp[1028];
     int fplen = strlen(FirmwarePath);
@@ -372,6 +436,70 @@ void LoadFirmwareFromFile(FILE* f)
         Firmware[apdata+0xEF] = 0x01; // 0xEF = Configured?
 
         *(u16*)&Firmware[apdata+0xFE] = CRC16(&Firmware[apdata], 0xFE, 0x0000);
+    }
+
+    auto log_wfc_settings = [&](u32 apdata, const char* label)
+    {
+        if (apdata + 0xFE > FirmwareLength) return;
+        const u8* dns = &Firmware[apdata + 0xC8];
+        u64 id = 0;
+        u64 flags = 0;
+        memcpy(&id, &Firmware[apdata + 0xF0], 6);
+        memcpy(&flags, &Firmware[apdata + 0xF6], 8);
+        printf("[WFC][SPI] %s DNS=%u.%u.%u.%u ID=0x%llX flags=0x%llX\n",
+               label,
+               dns[0], dns[1], dns[2], dns[3],
+               (unsigned long long)id, (unsigned long long)flags);
+    };
+
+    u32 userdata = 0x7FE00 & FirmwareMask;
+    u32 ap_main = userdata - 0x400;
+    u32 ap_alt = userdata - 0xA00;
+    log_wfc_settings(ap_main, "firmware AP@-0x400");
+    log_wfc_settings(ap_alt, "firmware AP@-0xA00");
+
+    auto clear_ap_slot = [&](u32 apdata, const char* label)
+    {
+        if (apdata + 0xFE > FirmwareLength) return;
+        memset(&Firmware[apdata], 0, 0xFE);
+        Firmware[apdata + 0xE7] = 0xFF;
+        Firmware[apdata + 0xEF] = 0x00;
+        *(u16*)&Firmware[apdata + 0xFE] = CRC16(&Firmware[apdata], 0xFE, 0x0000);
+        printf("[WFC][SPI] cleared %s\n", label);
+    };
+
+    // If the alternate AP slot doesn't match the main WFC profile, clear it to avoid
+    // games selecting the wrong profile.
+    if (ap_alt + 0xFE <= FirmwareLength && ap_main + 0xFE <= FirmwareLength)
+    {
+        const u8* dns_main = &Firmware[ap_main + 0xC8];
+        const u8* dns_alt = &Firmware[ap_alt + 0xC8];
+        u64 id_main = 0;
+        u64 flags_main = 0;
+        u64 id_alt = 0;
+        u64 flags_alt = 0;
+        memcpy(&id_main, &Firmware[ap_main + 0xF0], 6);
+        memcpy(&flags_main, &Firmware[ap_main + 0xF6], 8);
+        memcpy(&id_alt, &Firmware[ap_alt + 0xF0], 6);
+        memcpy(&flags_alt, &Firmware[ap_alt + 0xF6], 8);
+
+        bool dns_match = memcmp(dns_main, dns_alt, 4) == 0;
+        bool id_match = id_main == id_alt;
+        bool flags_match = flags_main == flags_alt;
+        if (!(dns_match && id_match && flags_match))
+        {
+            clear_ap_slot(ap_alt, "firmware AP@-0xA00");
+        }
+    }
+
+    // Also mirror AP2/AP3 to AP1 so any slot the game reads has the same values.
+    u32 ap2 = ap_main + 0x100;
+    u32 ap3 = ap_main + 0x200;
+    if (ap3 + 0x100 <= FirmwareLength)
+    {
+        memcpy(&Firmware[ap2], &Firmware[ap_main], 0x100);
+        memcpy(&Firmware[ap3], &Firmware[ap_main], 0x100);
+        printf("[WFC][SPI] mirrored AP2/AP3 from AP1\n");
     }
 }
 

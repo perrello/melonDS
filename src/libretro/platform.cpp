@@ -6,6 +6,7 @@
 #include <deque>
 #include <utility>
 #include <vector>
+#include <cstdarg>
 #include <emscripten/emscripten.h>
 #endif
 
@@ -84,6 +85,278 @@ namespace
    std::deque<std::vector<u8>> lan_rx_queue;
    int mp_client_id = 0;
    int mp_client_count = 0;
+
+   inline u16 ReadBE16(const u8* p)
+   {
+      return (u16)((p[0] << 8) | p[1]);
+   }
+
+   inline u32 ReadBE32(const u8* p)
+   {
+      return (u32)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
+   }
+
+   void Append(char* out, size_t outlen, size_t& used, const char* fmt, ...)
+   {
+      if (used >= outlen)
+         return;
+      va_list args;
+      va_start(args, fmt);
+      int wrote = vsnprintf(out + used, outlen - used, fmt, args);
+      va_end(args);
+      if (wrote > 0)
+         used += (size_t)wrote;
+   }
+
+   void MacToStr(const u8* mac, char* out, size_t outlen)
+   {
+      if (outlen < 18)
+      {
+         if (outlen) out[0] = '\0';
+         return;
+      }
+      snprintf(out, outlen, "%02X:%02X:%02X:%02X:%02X:%02X",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+   }
+
+   void IPv4ToStr(const u8* ip, char* out, size_t outlen)
+   {
+      snprintf(out, outlen, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+   }
+
+   void TcpFlagsToStr(u8 flags, char* out, size_t outlen)
+   {
+      char tmp[8];
+      int o = 0;
+      if (flags & 0x01) tmp[o++] = 'F';
+      if (flags & 0x02) tmp[o++] = 'S';
+      if (flags & 0x04) tmp[o++] = 'R';
+      if (flags & 0x08) tmp[o++] = 'P';
+      if (flags & 0x10) tmp[o++] = 'A';
+      if (flags & 0x20) tmp[o++] = 'U';
+      if (flags & 0x40) tmp[o++] = 'E';
+      if (flags & 0x80) tmp[o++] = 'C';
+      tmp[o] = '\0';
+      snprintf(out, outlen, "%s", o ? tmp : "-");
+   }
+
+   void DescribeDns(const u8* payload, int payloadLen, char* out, size_t outlen, size_t& used)
+   {
+      if (payloadLen < 12)
+         return;
+      u16 id = ReadBE16(payload);
+      u16 flags = ReadBE16(payload + 2);
+      u16 qd = ReadBE16(payload + 4);
+      u16 an = ReadBE16(payload + 6);
+      Append(out, outlen, used, " dns id=%04X flags=%04X q=%u a=%u", id, flags, qd, an);
+
+      if (qd == 0)
+         return;
+      int off = 12;
+      char name[128];
+      int nameLen = 0;
+      while (off < payloadLen && payload[off] != 0)
+      {
+         u8 len = payload[off];
+         if (len & 0xC0)
+         {
+            off += 2;
+            break;
+         }
+         off++;
+         for (int i = 0; i < len && off < payloadLen && nameLen < (int)sizeof(name) - 1; i++, off++)
+            name[nameLen++] = (char)payload[off];
+         if (nameLen < (int)sizeof(name) - 1)
+            name[nameLen++] = '.';
+      }
+      if (nameLen > 0 && name[nameLen - 1] == '.')
+         nameLen--;
+      name[nameLen] = '\0';
+      if (off < payloadLen) off++;
+      if (off + 4 <= payloadLen)
+      {
+         u16 qtype = ReadBE16(payload + off);
+         u16 qclass = ReadBE16(payload + off + 2);
+         Append(out, outlen, used, " qname=%s qtype=%u qclass=%u", name, qtype, qclass);
+      }
+   }
+
+   const char* TlsRecordTypeName(u8 t)
+   {
+      switch (t)
+      {
+         case 0x14: return "change_cipher_spec";
+         case 0x15: return "alert";
+         case 0x16: return "handshake";
+         case 0x17: return "application";
+         default: return "unknown";
+      }
+   }
+
+   const char* TlsHandshakeTypeName(u8 t)
+   {
+      switch (t)
+      {
+         case 0x01: return "client_hello";
+         case 0x02: return "server_hello";
+         case 0x0B: return "certificate";
+         case 0x0E: return "server_hello_done";
+         case 0x10: return "client_key_exchange";
+         case 0x14: return "finished";
+         default: return "other";
+      }
+   }
+
+   const char* TlsAlertLevelName(u8 t)
+   {
+      switch (t)
+      {
+         case 0x01: return "warning";
+         case 0x02: return "fatal";
+         default: return "unknown";
+      }
+   }
+
+   const char* TlsAlertDescName(u8 t)
+   {
+      switch (t)
+      {
+         case 0x0A: return "unexpected_message";
+         case 0x14: return "bad_record_mac";
+         case 0x15: return "decryption_failed";
+         case 0x28: return "handshake_failure";
+         case 0x2A: return "bad_certificate";
+         case 0x2E: return "certificate_unknown";
+         case 0x30: return "illegal_parameter";
+         case 0x46: return "protocol_version";
+         case 0x47: return "insufficient_security";
+         default: return "other";
+      }
+   }
+
+   void DescribeTls(const u8* payload, int payloadLen, char* out, size_t outlen, size_t& used)
+   {
+      if (payloadLen < 5)
+         return;
+      u8 rectype = payload[0];
+      u16 version = ReadBE16(payload + 1);
+      u16 rlen = ReadBE16(payload + 3);
+      if (rectype < 0x14 || rectype > 0x17)
+         return;
+      Append(out, outlen, used, " tls=%s v=%04X rlen=%u", TlsRecordTypeName(rectype), version, rlen);
+      if (rectype == 0x16 && payloadLen >= 9)
+      {
+         u8 hstype = payload[5];
+         Append(out, outlen, used, " hs=%s", TlsHandshakeTypeName(hstype));
+      }
+      else if (rectype == 0x15 && payloadLen >= 7)
+      {
+         u8 level = payload[5];
+         u8 desc = payload[6];
+         Append(out, outlen, used, " alert=%s/%s(%u)", TlsAlertLevelName(level), TlsAlertDescName(desc), desc);
+      }
+   }
+
+   void DescribeHttp(const u8* payload, int payloadLen, char* out, size_t outlen, size_t& used)
+   {
+      if (payloadLen < 5)
+         return;
+      if (payloadLen >= 5 && memcmp(payload, "HTTP/", 5) == 0)
+      {
+         if (payloadLen >= 12)
+         {
+            char code[4] = {0};
+            memcpy(code, payload + 9, 3);
+            Append(out, outlen, used, " http=RESP %s", code);
+         }
+         else
+         {
+            Append(out, outlen, used, " http=RESP");
+         }
+      }
+      else if (payloadLen >= 4 && memcmp(payload, "GET ", 4) == 0)
+         Append(out, outlen, used, " http=GET");
+      else if (payloadLen >= 5 && memcmp(payload, "POST ", 5) == 0)
+         Append(out, outlen, used, " http=POST");
+   }
+
+   void DescribeFrame(const u8* data, int len, char* out, size_t outlen)
+   {
+      size_t used = 0;
+      if (len < 14)
+      {
+         Append(out, outlen, used, "len=%d (short)", len);
+         return;
+      }
+
+      char dstmac[32], srcmac[32];
+      MacToStr(data, dstmac, sizeof(dstmac));
+      MacToStr(data + 6, srcmac, sizeof(srcmac));
+      u16 ethertype = ReadBE16(data + 12);
+      Append(out, outlen, used, "eth dst=%s src=%s type=0x%04X len=%d", dstmac, srcmac, ethertype, len);
+
+      if (ethertype == 0x0800 && len >= 34)
+      {
+         u8 ihl = (data[14] & 0x0F) * 4;
+         if (ihl < 20 || len < 14 + ihl)
+            return;
+         u8 proto = data[23];
+         char srcip[32], dstip[32];
+         IPv4ToStr(data + 26, srcip, sizeof(srcip));
+         IPv4ToStr(data + 30, dstip, sizeof(dstip));
+         Append(out, outlen, used, " ip %s -> %s proto=%u", srcip, dstip, proto);
+
+         int l4 = 14 + ihl;
+         int payloadLen = len - l4;
+         if (proto == 6 && payloadLen >= 20)
+         {
+            u16 sport = ReadBE16(data + l4);
+            u16 dport = ReadBE16(data + l4 + 2);
+            u32 seq = ReadBE32(data + l4 + 4);
+            u32 ack = ReadBE32(data + l4 + 8);
+            u8 dataoff = (data[l4 + 12] >> 4) * 4;
+            u8 flags = data[l4 + 13];
+            u16 win = ReadBE16(data + l4 + 14);
+            char fstr[16];
+            TcpFlagsToStr(flags, fstr, sizeof(fstr));
+            Append(out, outlen, used, " tcp %u -> %u flags=%s seq=%u ack=%u win=%u", sport, dport, fstr, seq, ack, win);
+
+            int poff = l4 + dataoff;
+            int plen = len - poff;
+            if (plen > 0)
+            {
+               Append(out, outlen, used, " payload=%d", plen);
+               DescribeTls(data + poff, plen, out, outlen, used);
+               DescribeHttp(data + poff, plen, out, outlen, used);
+            }
+         }
+         else if (proto == 17 && payloadLen >= 8)
+         {
+            u16 sport = ReadBE16(data + l4);
+            u16 dport = ReadBE16(data + l4 + 2);
+            Append(out, outlen, used, " udp %u -> %u", sport, dport);
+            int uoff = l4 + 8;
+            int ulen = len - uoff;
+            if (sport == 53 || dport == 53)
+               DescribeDns(data + uoff, ulen, out, outlen, used);
+         }
+      }
+      else if (ethertype == 0x0806 && len >= 42)
+      {
+         u16 oper = ReadBE16(data + 20);
+         char spa[32], tpa[32];
+         IPv4ToStr(data + 28, spa, sizeof(spa));
+         IPv4ToStr(data + 38, tpa, sizeof(tpa));
+         Append(out, outlen, used, " arp op=%u %s -> %s", oper, spa, tpa);
+      }
+   }
+
+   void LogLanFrame(const char* tag, const u8* data, int len)
+   {
+      char summary[512];
+      DescribeFrame(data, len, summary, sizeof(summary));
+      printf("%s %s\n", tag, summary);
+   }
 }
 
 EM_JS(void, netpacket_bridge_send, (int flags, const u8* data, int len), {
@@ -535,6 +808,7 @@ namespace Platform
          return 0;
       }
 
+      LogLanFrame("LAN_TX:", data, len);
       lan_packet_bridge_send(data, len);
       return len;
 #elif defined(HAVE_PCAP)
@@ -560,6 +834,7 @@ namespace Platform
       if (len > 2048)
          len = 2048;
 
+      LogLanFrame("LAN_RX:", frame.data(), len);
       memcpy(data, frame.data(), len);
       return len;
 #elif defined(HAVE_PCAP)
