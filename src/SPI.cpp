@@ -93,6 +93,37 @@ EMSCRIPTEN_KEEPALIVE void melonds_set_wfc_id_flags_u32(u32 id_lo, u32 id_hi, u32
     SPI_Firmware::wfcID = static_cast<int64_t>(id);
     SPI_Firmware::wfcFlags = static_cast<int64_t>(flags);
 }
+
+EMSCRIPTEN_KEEPALIVE void melonds_get_wfc_id_flags_u32(u32* out)
+{
+    if (!out) return;
+    u64 id = static_cast<u64>(SPI_Firmware::wfcID);
+    u64 flags = static_cast<u64>(SPI_Firmware::wfcFlags);
+    out[0] = static_cast<u32>(id & 0xFFFFFFFFu);
+    out[1] = static_cast<u32>((id >> 32) & 0xFFFFFFFFu);
+    out[2] = static_cast<u32>(flags & 0xFFFFFFFFu);
+    out[3] = static_cast<u32>((flags >> 32) & 0xFFFFFFFFu);
+}
+
+EMSCRIPTEN_KEEPALIVE int melonds_get_wfc_id_flags_from_firmware_u32(u32* out)
+{
+    if (!out || !SPI_Firmware::Firmware || SPI_Firmware::FirmwareLength == 0) return 0;
+    u32 mask = SPI_Firmware::FirmwareLength - 1;
+    u32 userdata = 0x7FE00 & mask;
+    u32 apdata = userdata - 0x400;
+    if (apdata + 0xFE > SPI_Firmware::FirmwareLength) return 0;
+
+    u64 id = 0;
+    u64 flags = 0;
+    memcpy(&id, &SPI_Firmware::Firmware[apdata + 0xF0], 6);
+    memcpy(&flags, &SPI_Firmware::Firmware[apdata + 0xF6], 8);
+
+    out[0] = static_cast<u32>(id & 0xFFFFFFFFu);
+    out[1] = static_cast<u32>((id >> 32) & 0xFFFFFFFFu);
+    out[2] = static_cast<u32>(flags & 0xFFFFFFFFu);
+    out[3] = static_cast<u32>((flags >> 32) & 0xFFFFFFFFu);
+    return 1;
+}
 }
 #endif
 
