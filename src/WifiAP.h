@@ -23,7 +23,7 @@ namespace WifiAP
 {
 
 #define AP_MAC  0x00, 0xF0, 0x77, 0x77, 0x77, 0x77
-#define AP_NAME "melonAP"
+#define AP_NAME "Foxol"
 
 extern const u8 APMac[6];
 

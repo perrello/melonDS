@@ -339,7 +339,7 @@ void LoadDefaultFirmware()
         u32 apdata = userdata - 0x400;
         memset(&Firmware[apdata], 0, 0x300);
 
-        strcpy((char*)&Firmware[apdata+0x40], "melonAP");
+        strcpy((char*)&Firmware[apdata+0x40], "Foxol");
         if (NDS::ConsoleType == 1) *(u16*)&Firmware[apdata+0xEA] = 1400;
 
         std::array<u8, 4> nullDNS = {0,0,0,0};
@@ -428,7 +428,7 @@ void LoadFirmwareFromFile(FILE* f)
         u32 apdata = userdata - 0x400;
         memset(&Firmware[apdata], 0, 0xF0); // Erase up until (but not including) WFC User ID
 
-        strcpy((char*)&Firmware[apdata+0x40], "melonAP");
+        strcpy((char*)&Firmware[apdata+0x40], "Foxol");
         if (NDS::ConsoleType == 1) *(u16*)&Firmware[apdata+0xEA] = 1400;
 
         memcpy(&Firmware[apdata+0xC8], DNS.data(), 4); // 0xC8 = Primary DNS
