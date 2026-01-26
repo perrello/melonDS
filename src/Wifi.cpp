@@ -197,6 +197,7 @@ void Reset()
 
     memset(&IOPORT(0x018), 0xFF, 6);
     memset(&IOPORT(0x020), 0xFF, 6);
+    IOPORT(W_PowerUS) = 0x0001;
 
     USCounter = 0;
     USCompare = 0;
@@ -1341,6 +1342,7 @@ void Write(u32 addr, u16 val)
         }
         break;
     case W_PowerUS:
+        val &= 0x0003;
         // schedule timer event when the clock is enabled
         // TODO: check whether this resets USCOUNT (and also which other events can reset it)
         if ((IOPORT(W_PowerUS) & 0x0001) && !(val & 0x0001))
@@ -1363,6 +1365,7 @@ void Write(u32 addr, u16 val)
             printf("WIFI OFF\n");
             NDS::CancelEvent(NDS::Event_Wifi);
         }
+        IOPORT(W_PowerUS) = val;
         break;
 
     case W_USCountCnt: val &= 0x0001; break;
@@ -1407,6 +1410,8 @@ void Write(u32 addr, u16 val)
 
 
     case W_RXCnt:
+        if (val & 0x8000)
+            FireTX();
         if (val & 0x0001)
         {
             IOPORT(W_RXBufWriteCursor) = IOPORT(W_RXBufWriteAddr);
